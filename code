@@ -1,0 +1,227 @@
+clc
+clear
+pkg load symbolic
+
+%%DLT - TRANSFORMACAO LINEAR DIRETA 
+
+pts=[57 129.006345 -316.526075
+84 2685.784982 -1901.74209
+108 1074.944783 -88.147495
+127 3055.124081 -503.404827
+133 1816.522793 -1434.12729
+136 278.024612 -1530.56471
+2 864.877781 -1047.17943
+94 1337.65961 -1476.69677
+123 2206.656506 -457.342054
+129 2372.706047 -1576.51785
+138 85.074456 -1110.94677
+145 1689.971259 -1198.14876];
+
+coord=[57 444.191 669.765 21.42
+84 675.587 374.946 1.432
+108 554.357 662.66 12.16
+127 770.173 537.567 8.069
+133 585.134 476.26 3.493
+136 395.148 530.693 6.973
+2 488.402 563.665 8.267
+94 525.366 492.427 7.269
+123 669.969 577.359 9.741
+129 648.682 432.527 2.117
+138 395.067 588.307 8.878
+145 579.864 510.927 5.448];
+
+%Transformacao entre referenciais do sistema imagem
+pix=0.007;
+img=[3344,2224];
+%Transformacao de ref CxL para Digital em mm
+function[fotocoord_digmm]=cxl_to_digmm(cxl,pix,img,cod_sent)
+%Nas variaveis entrar com:
+%cxl: Matriz de fotocoordenadas no referencial CxL
+%pix: Tamanho do pixel do sensor em mm
+%img: Dimensoes da imagem em numero de pixels por coluna e linha
+%cod_sent, inserir o valor numerico:
+%    1 - Se o sentido postivo do ref CxL for para a esquerda e para baixo
+%    2 - Se o sentido positivo do ref CxL for para a esquerda e para cima
+
+if (cod_sent==1||cod_sent==2);
+fotocoord_digmm(:,1)=cxl(:,1);
+
+  if cod_sent==2
+    cxl(:,3)=-cxl(:,3);
+  end
+  
+  fotocoord_digmm(:,2)=pix*(cxl(:,2)-(img(1)-1)/2);
+  fotocoord_digmm(:,3)=-pix*(cxl(:,3)-(img(2)-1)/2);
+  
+  end
+  
+endfunction
+
+[pts_foto]=cxl_to_digmm(pts,pix,img,2);
+
+%% Ajustamento DLT
+%Matriz  Lb: Observacoes no espaco imagem
+function[Lb]=Matriz_Lb(fotocoord)
+%Inserir fotocoordenadas dos pts de apoio em matriz formato nx3, onde: C1-id do ponto, C2-fotocoord x, C3-fotocoord y
+
+Lb=zeros(2*size(fotocoord,1),1);
+
+  for i=1:size(fotocoord,1)
+    Lb((i*2)-1,1)=fotocoord(i,2);
+    Lb((i*2),1)=fotocoord(i,3);  
+  endfor
+endfunction
+
+[Lb]=Matriz_Lb(pts_foto(1:6,:));
+
+%Matriz X0: Parametros aproximados inicialmente
+%Nesse caso do ajustamento linear, o vetor X0 pode ser resolvido como um sistema de equacoes lineares
+function[X0]=Matriz_X0(fotocoord,coord,n_par)
+%Inserir fotocoordenadas em matriz formato nx3, onde: C1-id do ponto, C2-fotocoord x, C3-fotocoord y
+%Inserir coordenadas no terreno em matriz nx4, onde: C1-id do ponto, C2- coord X, C3-coord Y, C4- coord Z
+%Inserir N de parametros
+
+%Equacao DLT como sistema linear e derivadas
+%x=L1*X+L2*Y+L3*Z+L4-x*L9*X-x*L10*Y-x*L11*Z
+%y=L5*X+L6*Y+L7*Z+L8-y*L9*X-y*L10*Y-y*L11*Z
+%d_eqx=[X  Y  Z  1  0  0  0  0  -X*x  -Y*x  -Z*x]
+%d_eqy=[0  0  0  0  X  Y  Z  1  -X*y  -Y*y  -Z*y]
+
+
+%Matriz Cf: Coeficientes dos parametros
+Cf=zeros(size(fotocoord,1),n_par);
+for i=1:size(fotocoord)
+   Cf(i*2-1,:)=[coord(i,2) coord(i,3) coord(i,4) 1 0 0 0 0 -coord(i,2)*fotocoord(i,2) -coord(i,3)*fotocoord(i,2) -coord(i,4)*fotocoord(i,2)];
+   Cf(i*2,:)=[0 0 0 0 coord(i,2) coord(i,3) coord(i,4) 1 -coord(i,2)*fotocoord(i,3) -coord(i,3)*fotocoord(i,3) -coord(i,4)*fotocoord(i,3)];
+endfor
+%Matriz K: Constantes
+K=zeros(size(fotocoord,1),1);
+for  i=1:size(fotocoord)
+  K(i*2-1,1)=fotocoord(i,2);
+  K(i*2,1)=fotocoord(i,3);
+endfor
+%Solucao do sistema linear
+X0=Cf\K;
+endfunction
+[X0]=Matriz_X0(pts_foto(1:6,:),coord(1:6,:),11);
+
+%Matriz P: Pesos
+%Matriz Diagonal (sem levar em conta correlacoes entre as medidas) sendo o inverso da varianca das observacoes
+%Precisao das observacoes das fotocoord como sendo 1/2 pixel
+P=eye(size(Lb,1))*1/(pix^2);
+
+%Matriz A: Derivada das observacoes em relacao aos parametros
+function [A]=Matriz_A(X0,coord)
+%X0: Inserir vetor de parametros aproximados 
+%Coord: Inserir coordenadas dos pts de apoio em matriz formato nx4, onde: C1-id do ponto, C2-Coord X, C3-Coord Y, C4-Coord Z
+
+%Equacao DLT: (x,y)=f(L1,L2,..,L11)
+syms L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z
+eqx=(L1*X+L2*Y+L3*Z+L4)/(L9*X+L10*Y+L11*Z+1);
+eqy=(L5*X+L6*Y+L7*Z+L8)/(L9*X+L10*Y+L11*Z+1);
+
+%Derivadas das funcoes em relacao aos parametros
+d_eqx=[diff(eqx,L1) diff(eqx,L2) diff(eqx,L3) diff(eqx,L4) diff(eqx,L5) diff(eqx,L6) diff(eqx,L7) diff(eqx,L8) diff(eqx,L9) diff(eqx,L10) diff(eqx,L11)];
+d_eqy=[diff(eqy,L1) diff(eqy,L2) diff(eqy,L3) diff(eqy,L4) diff(eqy,L5) diff(eqy,L6) diff(eqy,L7) diff(eqy,L8) diff(eqy,L9) diff(eqy,L10) diff(eqy,L11)];
+
+%Matriz A 12(obs)x11(param)
+syms A;
+A=subs(A,zeros(2*size(coord,1),size(d_eqx,2)));
+for i=1:size(coord,1)
+    A(i*2-1,:)=vpa(subs(d_eqx,{L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z},[X0(1) X0(2) X0(3) X0(4) X0(5) X0(6) X0(7) X0(8) X0(9) X0(10) X0(11) coord(i,2) coord(i,3) coord(i,4)]));
+    A(i*2,:)=vpa(subs(d_eqy,{L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z},[X0(1) X0(2) X0(3) X0(4) X0(5) X0(6) X0(7) X0(8) X0(9) X0(10) X0(11) coord(i,2) coord(i,3) coord(i,4)]));
+endfor
+endfunction
+[A]=Matriz_A(X0,coord(1:6,:));
+
+%Matriz L: Discrepancia entre observacoes e valores calculados com X0
+function [L]=Matriz_L(Lb,X0,coord)
+%Inserir Vetor de observacoes(Lb) e de parametros aproximados(X0)
+%Coord: Inserir coordenadas dos pts de apoio em matriz formato nx4, onde: C1-id do ponto, C2-Coord X, C3-Coord Y, C4-Coord Z
+
+%Equacao DLT: (x,y)=f(L1,L2,..,L11)
+syms L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z
+eqx=(L1*X+L2*Y+L3*Z+L4)/(L9*X+L10*Y+L11*Z+1);
+eqy=(L5*X+L6*Y+L7*Z+L8)/(L9*X+L10*Y+L11*Z+1);
+
+%Matriz L0
+syms L0
+L0=subs(L0,zeros(size(Lb,1),1));
+for i=1:(size(Lb,1))/2
+  L0(i*2-1,1)=vpa(subs(eqx,[L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z],[X0(1) X0(2) X0(3) X0(4) X0(5) X0(6) X0(7) X0(8) X0(9) X0(10) X0(11) coord(i,2) coord(i,3) coord(i,4)]));
+  L0(i*2,1)=vpa(subs(eqy,[L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 X Y Z],[X0(1) X0(2) X0(3) X0(4) X0(5) X0(6) X0(7) X0(8) X0(9) X0(10) X0(11) coord(i,2) coord(i,3) coord(i,4)]));
+endfor
+L=L0-Lb;
+endfunction
+[L]=Matriz_L(Lb,X0,coord(1:6,:));
+
+%Matriz Xa: Parametros ajustados
+function [Xa,X,N]=Matriz_Xa(A,P,L,X0)
+%Inserir Matriz de derivadas (A), pesos (P),discrepancia das observacoes(L) e parametros aproximados(X0)
+
+%Equacoes Normais
+N=A'*P*A;
+U=A'*P*L;
+
+%Matriz X: Correcao dos Parametros
+X=-inv(N)*U;
+Xa=X+X0;
+endfunction
+[Xa,X,N]=Matriz_Xa(A,P,L,X0);
+
+%Iteracoes
+fim=false;
+it=0;
+while~fim %(Enquanto fim for falso)
+it=it+1
+
+%Atualizar matrizes
+X0=Xa;
+[A]=Matriz_A(X0,coord(1:6,:));
+[L]=Matriz_L(Lb,X0,coord(1:6,:));
+[Xa,X,N]=Matriz_Xa(A,P,L,X0);
+fim=(max(abs(X))<10^-6) || (it>=10);
+endwhile
+
+%Variancia a posteriori
+function [V,sig_pos,sig_Xa]=sigma_posterior(A,X,L,P,N,sig_Xa)
+%Matriz V: Residuos
+V=double(A*X+L);
+%Grau de liberdade: N de equacoes - N de parametros (n-u)
+gl=size(A,1)-size(A,2);
+%Var pos  
+sig_pos(1:size(N,1),1:size(N,2))=(V'*P*V)/gl;
+%Matriz Variancia-Covariancia dos Parametros
+MVC=(sig_pos.*inv(N))
+%Desvio Padrao dos Parametros
+sig_Xa=sqrt(diag(MVC));
+endfunction
+[V,sig_pos,sig_Xa]=sigma_posterior(A,X,L,P,N);
+
+
+%% Monorrestituicao
+%Equacao Inversa da DLT
+function[XY]=DLT_inversa(Xa,Z,ftc)
+Xa=double(Xa);
+M1=zeros(2,2);
+M2=zeros(2,1);
+XY=zeros(size(ftc,1),2);
+for i=1:size(ftc,1)
+M1=[Xa(1)-ftc(i,2)*Xa(9),Xa(2)-ftc(i,2)*Xa(10)
+    Xa(5)-ftc(i,3)*Xa(9),Xa(6)-ftc(i,3)*Xa(10)];
+M2=[-Z(i)*(Xa(3)-ftc(i,2)*Xa(11))-Xa(4)+ftc(i,2)
+    -Z(i)*(Xa(7)-ftc(i,3)*Xa(11))-Xa(8)+ftc(i,3)];
+XY(i,:)=(inv(M1)*M2)';
+endfor
+endfunction
+[XY]=DLT_inversa(Xa,coord(:,4),pts_foto)
+
+%Analise de Acuracia
+%Discrepancia nos Pontos de Verificacao: Calculado-Observado
+ac(:,1)=coord(7:12,1);
+ac(:,2:3)=XY(7:12,1:2)-coord(7:12,2:3)
+
+%Teste do qui-quadrado
+sig_pri=1;
+gl=size(A,1)-size(A,2);
+qui=(sig_pos/sig_pri)*gl;
